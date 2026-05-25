@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { AgentRun, CivicReport } from '@shared/types';
+import ReactMarkdown from 'react-markdown';
 
 export default function Home() {
   const [text, setText] = useState('');
@@ -125,7 +126,8 @@ export default function Home() {
       {run?.status === 'complete' && run.draft && (
         <div className="border-2 border-blue-200 rounded p-4 space-y-3">
           <h2 className="font-semibold text-blue-700">Draft Submission</h2>
-          <p className="text-sm text-gray-700">{run.draft}</p>
+          <p className="text-sm text-gray-700">
+            <ReactMarkdown>{run.draft}</ReactMarkdown></p>
           <div className="flex gap-3">
             <button 
               onClick={handleApprove}

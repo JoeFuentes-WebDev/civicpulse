@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import { getRun } from '../../store';
 
 export async function GET(
   _req: Request,
@@ -14,9 +15,9 @@ export async function GET(
     return NextResponse.json({ error: 'No store' }, { status: 404 });
   }
 
-  const data = JSON.parse(readFileSync(storePath, 'utf-8'));
-  const run = data[id];
-
+  // const data = JSON.parse(readFileSync(storePath, 'utf-8'));
+  const run = await getRun(id);
+  
   if (!run) {
     return NextResponse.json({ error: 'Run not found' }, { status: 404 });
   }
