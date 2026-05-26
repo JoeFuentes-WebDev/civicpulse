@@ -23,11 +23,11 @@ export async function POST(req: NextRequest) {
     const updated: AgentRun = {
       ...run,
       status: 'complete',
-      steps: result.toolCalls.map((tc, i) => ({
+      steps: result.toolResults.map((tr, i) => ({
         id: `step-${i}`,
-        name: tc.tool,
+        name: tr.tool,
         status: 'complete' as const,
-        output: tc.input as Record<string, unknown>,
+        output: tr.result as Record<string, unknown>,
         timestamp: new Date(),
       })),
       draft: result.text,

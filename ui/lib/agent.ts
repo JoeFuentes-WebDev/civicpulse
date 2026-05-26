@@ -273,6 +273,10 @@ export async function runCivicAgent(
       tool: tc.toolName,
       input: tc.input,
     })),
+    toolResults: result.steps.flatMap(s => s.toolResults ?? []).map(tr => ({
+      tool: tr.toolName,
+      result: tr.output,
+    })),
   };
 }
 
