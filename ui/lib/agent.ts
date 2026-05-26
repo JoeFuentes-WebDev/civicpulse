@@ -105,7 +105,7 @@ const check_location_history = tool({
 
     // Mocked for POC — replaced by Supabase query in Phase 2
     return {
-      priorReportCount: 3,
+      priorReportCount: 0,
       lastReportedDate: '2026-05-01',
       lastStatus: 'closed_unresolved',
       isRepeatLocation: false, // Replace with real Supabase query in V2.
