@@ -2,6 +2,7 @@ import { anthropic } from '@ai-sdk/anthropic';
 import { generateText, tool, stepCountIs, Output } from 'ai';
 import { z } from 'zod';
 import { getCityConfig, isCitySupported } from '../config/cities';
+import { AgentStep } from '../shared/types';
 
 const client = anthropic('claude-sonnet-4-20250514');
 
@@ -226,11 +227,10 @@ const geocode_address = tool({
   }
 });
 // Exported agent function — called by POST /api/run
-export async function runCivicAgent(input: {
-  text?: string;
-  lat: number;
-  lng: number;
-}) {
+export async function runCivicAgent(
+  input: { text?: string; lat: number; lng: number },
+  onStep?: (step: AgentStep) => Promise<void>
+) {
   const result = await generateText({
     model: client,
     system: `You are a civic reporting agent for California cities.
@@ -246,10 +246,24 @@ export async function runCivicAgent(input: {
          4. Call check_location_history() with the confirmed coordinates
          5. Call draft_submission() with all collected data
          6. If confidence >= 0.90 AND severity <= 3: call submit_to_311() automatically
-            If confidence < 0.90 OR severity > 3: stop and return draft for human review`,
+            then respond with a clean summary of what was submitted including the service request ID.
+            If confidence < 0.90 OR severity > 3: respond with the draft details and explain what needs review.
+            Never explain your decision-making process. Just act and report the result clearly.`,
     prompt: input.text || 'No description provided.',
-    tools: { resolve_location, classify_report, check_location_history, draft_submission, submit_to_311, geocode_address },
+    tools: { resolve_location, geocode_address, classify_report, check_location_history, draft_submission, submit_to_311 },
     stopWhen: stepCountIs(6),
+    onStepFinish: async (step) => {
+      if (onStep && step.toolCalls?.length > 0) {
+        const toolCall = step.toolCalls[0];
+        await onStep({
+          id: toolCall.toolCallId,
+          name: toolCall.toolName,
+          status: 'complete',
+          output: toolCall.input as Record<string, unknown>,
+          timestamp: new Date(),
+        });
+      }
+    },
   });
 
   return {

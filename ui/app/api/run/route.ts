@@ -17,11 +17,16 @@ export async function POST(req: NextRequest) {
   setRun(run);
 
   // Run agent in background
-  runCivicAgent({
-    text: input.text,
-    lat: input.lat,
-    lng: input.lng,
-  }).then(result => {
+  runCivicAgent(
+    { text: input.text, lat: input.lat, lng: input.lng },
+    async (step) => {
+      const current = await getRun(run.id);
+      if (current) {
+        current.steps.push(step);
+        await setRun(current);
+      }
+    }
+  ).then(async (result) => {
     const updated: AgentRun = {
       ...run,
       status: 'complete',

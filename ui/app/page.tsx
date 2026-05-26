@@ -9,6 +9,22 @@ export default function Home() {
   const [run, setRun] = useState<AgentRun | null>(null);
   const [loading, setLoading] = useState(false);
   const [serviceRequestId, setServiceRequestId] = useState<string | null>(null);
+  const [progressMessage, setProgressMessage] = useState('');
+
+  async function runProgressMessages() {
+    const messages = [
+      'Resolving your location...',
+      'Classifying the issue...',
+      'Checking location history...',
+      'Drafting 311 submission...',
+      'Finalizing report...',
+    ];
+    
+    for (const msg of messages) {
+      setProgressMessage(msg);
+      await new Promise(r => setTimeout(r, 6000));
+    }
+  }
 
   async function handleSubmit() {
     if (!text.trim()) return;
@@ -32,6 +48,7 @@ export default function Home() {
     };
 
     // Start the agent run
+    runProgressMessages(); // fire and forget
     const res = await fetch('/api/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -95,11 +112,8 @@ export default function Home() {
       {run && (
         <div className="space-y-2">
           <h2 className="font-semibold text-gray-700">Agent Steps</h2>
-          {run.steps.map(step => (
-            <div
-              key={step.id}
-              className="border rounded p-3 text-sm space-y-1"
-            >
+          {(run.steps ?? []).map(step => (
+            <div key={step.id} className="border rounded p-3 text-sm space-y-1">
               <div className="flex items-center gap-2">
                 <span>
                   {step.status === 'complete' && '✓'}
@@ -114,11 +128,14 @@ export default function Home() {
                   {JSON.stringify(step.output, null, 2)}
                 </pre>
               )}
-              {step.error && (
-                <p className="text-red-500 text-xs">{step.error}</p>
-              )}
             </div>
           ))}
+          {run.status === 'running' && (
+            <div className="border rounded p-3 text-sm flex items-center gap-2 text-gray-400 animate-pulse">
+              <span>⟳</span>
+              <span>{progressMessage || 'Starting...'}</span>
+            </div>
+          )}
         </div>
       )}
 
@@ -126,8 +143,9 @@ export default function Home() {
       {run?.status === 'complete' && run.draft && (
         <div className="border-2 border-blue-200 rounded p-4 space-y-3">
           <h2 className="font-semibold text-blue-700">Draft Submission</h2>
-          <p className="text-sm text-gray-700">
-            <ReactMarkdown>{run.draft}</ReactMarkdown></p>
+          <div className="text-sm text-gray-700">
+            <ReactMarkdown>{run.draft}</ReactMarkdown>
+          </div>
           <div className="flex gap-3">
             <button 
               onClick={handleApprove}
