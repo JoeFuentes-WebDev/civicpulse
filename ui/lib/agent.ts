@@ -108,7 +108,7 @@ const check_location_history = tool({
       priorReportCount: 3,
       lastReportedDate: '2026-05-01',
       lastStatus: 'closed_unresolved',
-      isRepeatLocation: true,
+      isRepeatLocation: false, // Replace with real Supabase query in V2.
       pattern: 'Reported 3 times in last 60 days, closed without resolution each time',
     };
   }
