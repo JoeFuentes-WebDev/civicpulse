@@ -69,6 +69,7 @@ export default function Home() {
     const poll = setInterval(async () => {
       const r = await fetch(`/api/run/${id}`);
       const data: AgentRun = await r.json();
+      console.log('poll status:', data.status, 'steps:', data.steps?.length);
       if (data.status === 'complete' || data.status === 'error') {
         clearInterval(poll);
         clearInterval(interval);
