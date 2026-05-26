@@ -4,7 +4,7 @@ import { getRun, setRun } from '../store';
 export async function POST(req: NextRequest) {
   const { id } = await req.json();
 
-  const run = getRun(id);
+  const run = await getRun(id);
 
   if (!run) {
     return NextResponse.json({ error: 'Run not found' }, { status: 404 });
@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
     status: 'complete' as const,
   };
 
-  setRun(updated);
+  await setRun(updated);
 
   return NextResponse.json({ serviceRequestId });
 }
