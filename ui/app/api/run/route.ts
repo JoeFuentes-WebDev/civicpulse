@@ -4,6 +4,8 @@ import { setRun } from '../store';
 import { randomUUID } from 'crypto';
 import { runCivicAgent } from '../../../lib/agent';
 
+export const maxDuration = 60; 
+
 export async function POST(req: NextRequest) {
   const input: CivicReport = await req.json();
 
@@ -14,12 +16,15 @@ export async function POST(req: NextRequest) {
     status: 'running',
   };
 
-  setRun(run);
+  await setRun(run);
 
-  // Run agent in background
-  runCivicAgent(
-    { text: input.text, lat: input.lat, lng: input.lng }
-  ).then(async (result) => {
+  try {
+    const result = await runCivicAgent({
+      text: input.text,
+      lat: input.lat,
+      lng: input.lng,
+    });
+
     const updated: AgentRun = {
       ...run,
       status: 'complete',
@@ -32,8 +37,10 @@ export async function POST(req: NextRequest) {
       })),
       draft: result.text,
     };
-    setRun(updated);
-  }).catch(err => {
+
+    await setRun(updated);
+
+  } catch (err: any) {
     const failed: AgentRun = {
       ...run,
       status: 'error',
@@ -45,8 +52,8 @@ export async function POST(req: NextRequest) {
         timestamp: new Date(),
       }],
     };
-    setRun(failed);
-  });
+    await setRun(failed);
+  }
 
   return NextResponse.json({ id: run.id });
 }
