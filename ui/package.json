@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test:311": "node scripts/test-311-access.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.79",

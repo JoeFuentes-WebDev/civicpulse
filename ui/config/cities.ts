@@ -16,13 +16,13 @@ export const cities: CityConfig[] = [
     id: 'san_francisco',
     name: 'San Francisco',
     state: 'CA',
-    open311BaseUrl: 'https://mobile311-dev.sfgov.org/open311/v2',
-    apiKeyEnvVar: 'SF_311_API_KEY',
+    open311BaseUrl: 'https://mobile311.sfgov.org/open311/v2',
+    apiKeyEnvVar: 'SF_OPEN311_APP_TOKEN',
     defaultLat: 37.7749,
     defaultLng: -122.4194,
     mayorEmail: 'mayor@sfgov.org',
     supervisorLookupUrl: 'https://sf.gov/find-your-supervisor',
-    notes: 'Dev environment. Switch to production URL before launch.'
+    notes: 'Open311 partner API — 7 submit types via SF_OPEN311_* env vars.',
   },
   {
     id: 'oakland',

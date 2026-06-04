@@ -1,8 +1,14 @@
 import { anthropic } from '@ai-sdk/anthropic';
 import { generateText, tool, stepCountIs, Output } from 'ai';
 import { z } from 'zod';
-import { getCityConfig, isCitySupported } from '../config/cities';
+import { forwardGeocode, reverseGeocode } from './geocode';
+import {
+  formatSf311ServicesForPrompt,
+  getSf311Services,
+  normalizeSf311Classification,
+} from './sf311Services';
 import { AgentStep } from '../shared/types';
+import { getLocationHistory } from './getLocationHistory';
 
 const client = anthropic('claude-sonnet-4-20250514');
 
@@ -15,82 +21,104 @@ const resolve_location = tool({
     lng: z.number().describe('Longitude coordinate'),
   }),
   execute: async ({ lat, lng }) => {
-    console.log('resolve_location called with:', lat, lng);
-    
-    const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`;
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'CivicPulse/1.0' }
-    });
-    const data = await res.json();
+    const place = await reverseGeocode(lat, lng);
 
     return {
-      address: data.display_name,
-      city: data.address.city || data.address.town,
-      state: data.address.state,
-      zip: data.address.postcode,
-      neighborhood: data.address.neighbourhood || data.address.suburb,
-      country: data.address.country,
+      address: place.address,
+      display_name: place.display_name,
+      city: place.city,
+      state: place.state,
+      zip: place.zip,
+      neighborhood: place.neighborhood,
+      country: place.country,
     };
   }
 });
 
-const classify_report = tool({
-  description: `Classifies a civic issue into the correct 311 category.
+/**
+ * Builds the classify_report tool. When a photoUrl is supplied, the image is
+ * passed to Claude Vision so classification (category + severity) can use what
+ * the photo actually shows, not just the text description.
+ */
+function buildClassifyReport(photoUrl?: string) {
+  return tool({
+    description: `Classifies a civic issue into the correct 311 category.
                 Also extracts any location mention from the description.
                 Call this after resolve_location() has returned.`,
-  inputSchema: z.object({
-    description: z.string().describe('The user\'s plain language description'),
-    city: z.string().describe('City from resolve_location'),
-    neighborhood: z.string().describe('Neighborhood from resolve_location'),
-    gps_address: z.string().describe('Full address from resolve_location'),
-  }),
-  execute: async ({ description, city, neighborhood, gps_address }) => {
-    console.log('classify_report called with:', description);
+    inputSchema: z.object({
+      description: z.string().describe('The user\'s plain language description'),
+      city: z.string().describe('City from resolve_location'),
+      neighborhood: z.string().describe('Neighborhood from resolve_location'),
+      gps_address: z.string().describe('Full address from resolve_location'),
+    }),
+    execute: async ({ description, city, neighborhood, gps_address }) => {
+      const services = await getSf311Services();
+      const serviceList = formatSf311ServicesForPrompt(services);
 
-    const classificationResult = await generateText({
-      model: client,
-      output: Output.object({
-        schema: z.object({
-          category: z.string(),
-          service_code: z.string(),
-          severity: z.number().min(1).max(5),
-          confidence: z.number().min(0).max(1),
-          reasoning: z.string(),
-          location_mention: z.string().nullable(),
-          is_different_location: z.boolean(),
-        }),
-      }),
-      prompt: `You are an SF 311 classification expert for ${city}, California.
-              
-              Classify this civic issue and extract any location information.
-              
+      const promptText = `You are an SF 311 classification expert for ${city}, California.
+
+              Classify this civic issue into exactly ONE official SF Open311 service type.
+              You MUST set service_code to one of the codes below exactly as written.
+              Set category to the matching service_name from the same line.
+
               User description: "${description}"
               User GPS location: ${gps_address}
               Neighborhood: ${neighborhood}
-              
-              Available SF 311 service codes:
-              - pothole_sf: Potholes, road damage, street defects
-              - graffiti_sf: Graffiti, vandalism, tagging
-              - dumping_sf: Illegal dumping, trash, debris
-              - streetlight_sf: Street light outages
-              - sidewalk_sf: Sidewalk or curb damage
-              - encampment_sf: Homeless encampments, tents
-              - druguse_sf: Open air drug use, needles, paraphernalia
-              - abandoned_vehicle_sf: Abandoned cars, trucks, vehicles
-              - tree_sf: Fallen trees, branches, tree maintenance
-              - noise_sf: Noise complaints, loud parties
-              - parking_sf: Illegal parking, blocking driveways
-              - water_sf: Water main breaks, flooding, sewage
-              - other_sf: Anything that doesn't fit above
-              
-              Also check: does the description mention a specific location 
-              that is DIFFERENT from the GPS location?
-              If yes, extract it. If no, set location_mention to null.`,
-    });
+              ${photoUrl ? 'A photo of the issue is attached. Use what it shows to choose the category and severity; if it disagrees with the text, trust the photo and explain why in reasoning.' : ''}
 
-    return classificationResult.output;
-  }
-});
+              Official SF Open311 service types (POC — only these may be used):
+              ${serviceList}
+
+              Mapping hints when the issue does not match perfectly:
+              - Potholes, cracks, street defects → input:Pothole & Street Issues
+              - Graffiti, broken fixtures, damaged public property → PW:BSM:Damage Property
+              - Parking signs, traffic signs → input:Parking & Traffic Sign Repair
+              - Trees, branches, fallen limbs → PW:BUF:Tree Maintenance
+              - Flyers, posters, illegal ads → input:Illegal Postings
+              - Scooter or bike blocking sidewalk → input:Improper Scooter and Bike Parking
+              - Park, playground, rec center issues → RPD:General:General
+              - Anything else → pick the closest type above; lower confidence if unsure
+
+              Location rules (important):
+              - If the description names a street, intersection, or landmark
+                (e.g. "Valencia near 18th", "on Mission at 24th", "by Dolores Park"),
+                set is_different_location to true and location_mention to that phrase
+                unless gps_address already names the same streets/intersection.
+              - If there is no place in the description, set location_mention to null
+                and is_different_location to false.`;
+
+      const schema = z.object({
+        category: z.string(),
+        service_code: z.string(),
+        severity: z.number().min(1).max(5),
+        confidence: z.number().min(0).max(1),
+        reasoning: z.string(),
+        location_mention: z.string().nullable(),
+        is_different_location: z.boolean(),
+      });
+
+      const classificationResult = await generateText({
+        model: client,
+        output: Output.object({ schema }),
+        ...(photoUrl
+          ? {
+              messages: [
+                {
+                  role: 'user' as const,
+                  content: [
+                    { type: 'text' as const, text: promptText },
+                    { type: 'image' as const, image: photoUrl },
+                  ],
+                },
+              ],
+            }
+          : { prompt: promptText }),
+      });
+
+      return normalizeSf311Classification(services, classificationResult.output);
+    },
+  });
+}
 
 const check_location_history = tool({
   description: `Checks if a location has been reported before.
@@ -100,18 +128,7 @@ const check_location_history = tool({
     lat: z.number().describe('Latitude of the reported issue'),
     lng: z.number().describe('Longitude of the reported issue'),
   }),
-  execute: async ({ lat, lng }) => {
-    console.log('check_location_history called with:', lat, lng);
-
-    // Mocked for POC — replaced by Supabase query in Phase 2
-    return {
-      priorReportCount: 0,
-      lastReportedDate: '2026-05-01',
-      lastStatus: 'closed_unresolved',
-      isRepeatLocation: false, // Replace with real Supabase query in V2.
-      pattern: 'Reported 3 times in last 60 days, closed without resolution each time',
-    };
-  }
+  execute: async ({ lat, lng }) => getLocationHistory(lat, lng),
 });
 
 const draft_submission = tool({
@@ -130,8 +147,7 @@ const draft_submission = tool({
     prior_report_count: z.number().describe('Number of prior reports at this location'),
   }),
   execute: async ({ description, service_code, category, severity, address, lat, lng, is_repeat, prior_report_count }) => {
-    console.log('draft_submission called');
-
+    
     const repeatNote = is_repeat
       ? `NOTE: This location has been reported ${prior_report_count} times previously with no resolution.`
       : '';
@@ -154,45 +170,6 @@ const draft_submission = tool({
   }
 });
 
-const submit_to_311 = tool({
-  description: `Submits the drafted report to the city's 311 API.
-                Only call this if confidence >= 0.90 AND severity <= 3.
-                Otherwise stop and return the draft for human review.`,
-  inputSchema: z.object({
-    service_code: z.string().describe('311 service code'),
-    description: z.string().describe('Full report description'),
-    lat: z.number().describe('Latitude'),
-    lng: z.number().describe('Longitude'),
-    address_string: z.string().describe('Human readable address'),
-    city: z.string().describe('City name from resolve_location'),
-  }),
-  execute: async (params) => {
-    const { city } = params;
-    console.log('Full submission params:', params);
-    console.log('submit_to_311 called for city:', city);
-
-    const config = getCityConfig(city);
-
-    if (!config) {
-      return {
-        error: true,
-        message: `${city} is not yet supported. Currently serving California cities only.`,
-      };
-    }
-
-    // Mocked for POC — Phase 2 uses real API key from config.apiKeyEnvVar
-    console.log('Would POST to:', config.open311BaseUrl);
-
-    return {
-      service_request_id: `${config.id.toUpperCase()}-POC-${Date.now()}`,
-      status: 'open',
-      status_notes: 'Report received and queued for review',
-      city: config.name,
-      submitted_at: new Date().toISOString(),
-    };
-  }
-});
-
 const geocode_address = tool({
   description: `Converts a text address, intersection, or landmark to GPS coordinates.
                 Call this when classify_report returns is_different_location: true.
@@ -202,56 +179,64 @@ const geocode_address = tool({
     city: z.string().describe('City for context'),
   }),
   execute: async ({ address, city }) => {
-    console.log('geocode_address called with:', address, city);
+    const result = await forwardGeocode(address, city);
 
-    const query = encodeURIComponent(`${address}, ${city}, California`);
-    const url = `https://nominatim.openstreetmap.org/search?q=${query}&format=json&limit=1`;
-
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'CivicPulse/1.0' }
-    });
-
-    const data = await res.json();
-
-    if (!data || data.length === 0) {
+    if (!result) {
       return { error: 'Location not found', lat: null, lng: null };
     }
 
-    const result = data[0];
-
     return {
-      lat: parseFloat(result.lat),
-      lng: parseFloat(result.lon),
+      lat: result.lat,
+      lng: result.lng,
+      address: result.address,
       display_name: result.display_name,
     };
   }
 });
 // Exported agent function — called by POST /api/run
 export async function runCivicAgent(
-  input: { text?: string; lat: number; lng: number },
+  input: { text?: string; lat: number; lng: number; photoUrl?: string },
   onStep?: (step: AgentStep) => Promise<void>
 ) {
-  const result = await generateText({
-    model: client,
-    system: `You are a civic reporting agent for California cities.
+  const classify_report = buildClassifyReport(input.photoUrl);
+
+  const system = `You are a civic reporting agent for California cities.
          The user's current GPS coordinates are: ${input.lat}, ${input.lng}.
+         ${input.photoUrl ? 'A photo of the issue is attached to the user message — use it to inform the description and classification.' : ''}
          When given a report you MUST follow these steps in order:
          1. Call resolve_location() with the GPS coordinates
          2. Call classify_report() with the resolved location details
          3. If classify_report returns is_different_location: true AND location_mention is not null:
             - Call geocode_address() with the location_mention and city
-            - Use the geocoded coordinates for all subsequent steps
+            - Use the geocoded lat/lng AND display_name for draft_submission and submit
+            - Do not use the GPS reverse-geocode address when the user named a different place
             If is_different_location: false:
-            - Continue using the original GPS coordinates
+            - Continue using the original GPS coordinates and resolve_location address
          4. Call check_location_history() with the confirmed coordinates
          5. Call draft_submission() with all collected data
-         6. If confidence >= 0.90 AND severity <= 3: call submit_to_311() automatically
-            then respond with a clean summary of what was submitted including the service request ID.
-            If confidence < 0.90 OR severity > 3: respond with the draft details and explain what needs review.
-            Never explain your decision-making process. Just act and report the result clearly.`,
-    prompt: input.text || 'No description provided.',
-    tools: { resolve_location, geocode_address, classify_report, check_location_history, draft_submission, submit_to_311 },
-    stopWhen: stepCountIs(6),
+         Do NOT submit to 311 — the app submits after you finish.`;
+
+  const result = await generateText({
+    model: client,
+    system,
+    tools: { resolve_location, geocode_address, classify_report, check_location_history, draft_submission },
+    stopWhen: stepCountIs(5),
+    ...(input.photoUrl
+      ? {
+          messages: [
+            {
+              role: 'user' as const,
+              content: [
+                {
+                  type: 'text' as const,
+                  text: input.text?.trim() || 'Analyze the attached photo and report the civic issue it shows.',
+                },
+                { type: 'image' as const, image: input.photoUrl },
+              ],
+            },
+          ],
+        }
+      : { prompt: input.text || 'No description provided.' }),
     onStepFinish: async (step) => {
       if (onStep && step.toolCalls?.length > 0) {
         const toolCall = step.toolCalls[0];

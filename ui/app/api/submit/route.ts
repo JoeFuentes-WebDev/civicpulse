@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getSubmitContextFromRun, submitTo311, Submit311Error } from '../../../lib/submit311';
 import { getRun, setRun } from '../store';
 
 export async function POST(req: NextRequest) {
@@ -10,17 +11,34 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Run not found' }, { status: 404 });
   }
 
-  // Mock 311 submission for POC
-  // Phase 2: call real Open311 API here
-  const serviceRequestId = `SF311-${Date.now()}`;
+  if (run.serviceRequestId) {
+    return NextResponse.json({
+      serviceRequestId: run.serviceRequestId,
+      mock: run.submission === 'mock',
+    });
+  }
 
-  const updated = {
-    ...run,
-    serviceRequestId,
-    status: 'complete' as const,
-  };
+  try {
+    const { payload, city } = getSubmitContextFromRun(run);
+    const result = await submitTo311(payload, city);
 
-  await setRun(updated);
+    const updated = {
+      ...run,
+      serviceRequestId: result.serviceRequestId,
+      submission: result.mock ? ('mock' as const) : ('user' as const),
+      status: 'complete' as const,
+    };
 
-  return NextResponse.json({ serviceRequestId });
+    await setRun(updated);
+
+    return NextResponse.json({
+      serviceRequestId: result.serviceRequestId,
+      mock: result.mock,
+    });
+  } catch (err) {
+    if (err instanceof Submit311Error) {
+      return NextResponse.json({ error: err.message }, { status: 400 });
+    }
+    throw err;
+  }
 }
