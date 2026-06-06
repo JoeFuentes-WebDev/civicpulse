@@ -1,12 +1,12 @@
 # PROJECT_CONTEXT.md
 
-_Last refreshed by reading the full codebase. Reflects the current `ui/` Next.js app architecture and extension points._
+_Last refreshed by reading the full codebase. Reflects the current `ui/` Next.js app architecture and extension points. Includes Milestone 01 (Photo Input) and Milestone 02 (Voice Input), both complete._
 
 ---
 
 ## What this app does
 
-**CivicPulse** is an AI-assisted civic issue reporter for California cities (San Francisco is the only live target today). A resident describes a problem in plain language ("broken glass on 9th and Mission"); an LLM agent then:
+**CivicPulse** is an AI-assisted civic issue reporter for California cities (San Francisco is the only live target today). A resident describes a problem in plain language ("broken glass on 9th and Mission") — by **typing, dictating (voice), and/or attaching a photo** — and an LLM agent then:
 
 1. Resolves the location (GPS reverse-geocode, but prefers a place named in the text).
 2. Classifies the issue into an official SF Open311 service type.
@@ -75,7 +75,9 @@ agent/                                # STALE legacy package — superseded by u
 ### Primary path (`page.tsx`)
 
 1. **GPS** acquired on mount via `navigator.geolocation` (falls back to SF center `37.7749,-122.4194`).
-2. User types description → **`POST /api/run`** with `CivicReport { text, lat, lng, timestamp }`.
+2. User composes a description by **typing, dictating, or both**, and may **attach a photo** → **`POST /api/run`** with `CivicReport { text, lat, lng, timestamp, photoUrl? }`.
+   - **Voice (Milestone 02):** the 🎤 button uses the browser **Web Speech API** (`SpeechRecognition` / `webkitSpeechRecognition`) to stream a transcript directly into the existing `text` field (editable before submit). Entirely client-side — no audio is uploaded or stored.
+   - **Photo (Milestone 01):** the 📷 button opens a file picker (`accept="image/*" capture="environment"`); the image is read to a base64 **data URL**, validated (image type, ≤ 4MB), previewed, and carried in `photoUrl`.
 3. Route creates an `AgentRun` (`status: 'running'`), persists it, then **awaits `finishAgentRun`** and persists the result. Returns `{ id }` immediately after completion.
 4. Client **polls `GET /api/run/[id]`** every 1s until `status` is `complete` or `error`.
 5. Routing via `isAutoSubmitted(run)`:
@@ -116,15 +118,17 @@ Trace: **UI → API → Agent → Open311**
 
 ### 3. The agent (`agent.ts` → `runCivicAgent`)
 
-Vercel AI SDK `generateText` with `stopWhen: stepCountIs(5)` and a system prompt enforcing tool order. Five tools:
+Vercel AI SDK `generateText` with `stopWhen: stepCountIs(5)` and a system prompt enforcing tool order. `runCivicAgent` accepts `{ text?, lat, lng, photoUrl? }`. Five tools:
 
 | Tool | Purpose | Notes |
 |------|---------|-------|
 | `resolve_location` | GPS → address via `reverseGeocode` | Always first |
-| `classify_report` | LLM (`generateText` + `Output.object`) → `{ category, service_code, severity 1–5, confidence 0–1, reasoning, location_mention, is_different_location }` against the live SF service catalog | Output normalized to a valid `service_code` via `normalizeSf311Classification` |
+| `classify_report` | LLM (`generateText` + `Output.object`) → `{ category, service_code, severity 1–5, confidence 0–1, reasoning, location_mention, is_different_location }` against the live SF service catalog | Built per-run via `buildClassifyReport(photoUrl?)`; output normalized to a valid `service_code` via `normalizeSf311Classification` |
 | `geocode_address` | Forward-geocode a `location_mention` when `is_different_location` | |
 | `check_location_history` | Prior-report lookup | **Stub** → `getLocationHistory` (random 0–3) |
 | `draft_submission` | Assemble `DraftSubmissionPayload` | Hard-codes reporter identity: `CivicPulse User / report@civicpulse.app` |
+
+**Multimodal (Claude Vision) when a photo is present:** if `photoUrl` is set, both the orchestrator `generateText` call **and** the `classify_report` internal classifier call switch from a `prompt` string to a multimodal `messages` array (text + `{ type: 'image', image: photoUrl }`). The classifier is instructed to use the photo for category/severity and to trust the image over the text when they disagree. When no photo is present, both calls use the original `prompt` string **verbatim** — the text-only path is unchanged.
 
 > The agent does **not** submit. Submission is owned by `finishAgentRun` / `submit311`. (The legacy root `agent/` package still has a `submit_to_311` tool — that copy is dead.)
 
@@ -148,15 +152,21 @@ Vercel AI SDK `generateText` with `stopWhen: stepCountIs(5)` and a system prompt
 
 ## Existing Extension Points
 
-### Voice + Photo input (known area of interest)
+### Photo input — IMPLEMENTED (Milestone 01)
 
-The scaffolding is **already stubbed** — the work is wiring it through, not designing from scratch.
+- **UI:** `app/page.tsx` `ReportScreen` — the 📷 button opens a hidden `<input type="file" accept="image/*" capture="environment">`, reads the file to a base64 data URL, previews it with a remove (×) control, and validates type + 4MB cap (`MAX_PHOTO_BYTES`).
+- **Transport:** carried in the existing `CivicReport.photoUrl` field (no shape change); threaded `POST /api/run` → `finishAgentRun` → `runCivicAgent`, and `PATCH /api/run/[id]` re-passes `run.input.photoUrl` so edit-and-rerun keeps the image.
+- **AI:** drives the multimodal classifier (see AI Pipeline §3).
+- **Still open for V2:** object storage instead of base64-in-Redis; sending Open311 `media_url` in `sf311Submit.ts`; optional EXIF GPS.
 
-- **UI placeholders:** `app/page.tsx` `ReportScreen` renders decorative **📷 Photo** and **🎤 Voice** buttons (~lines 244–258). They have no `onClick` and do nothing today.
-- **Types:** `CivicReport` already declares optional `photoUrl?: string` and `voiceUrl?: string` (`shared/types.ts` lines 3–4). **Never read or written anywhere** in the codebase.
-- **API seam:** `POST /api/run` parses the whole `CivicReport` body (`api/run/route.ts:10`), so adding `photoUrl`/`voiceUrl` requires **no shape change** to transport.
-- **Integration point (the key one):** `runCivicAgent` takes only `{ text, lat, lng }` (`agent.ts:175`) and sets `prompt: input.text` (`agent.ts:195`). The model (`claude-sonnet-4`) is **natively multimodal**, so a photo can be added as an image content part to improve `classify_report` severity/category. Voice needs a transcription hop (browser Web Speech API → fill `text`, or server-side Whisper before `runCivicAgent`).
-- **Missing pieces:** no `api/upload` route, no storage (S3/Vercel Blob), no transcription. Open311 supports a `media_url` field — would attach in `sf311Submit.ts` once a photo URL exists.
+### Voice input — IMPLEMENTED (Milestone 02)
+
+- **UI-only, additive:** `app/page.tsx` `ReportScreen` — the 🎤 button toggles the browser **Web Speech API** (`getSpeechRecognitionCtor()` resolves `SpeechRecognition` / `webkitSpeechRecognition`). Live transcript (`continuous` + `interimResults`, `lang='en-US'`) is appended into the existing `text` field and remains fully editable. Disabled with a tooltip when unsupported; mic-denial shows an inline message; recognition is cleaned up on unmount.
+- **No backend:** no audio upload/storage, no new routes — voice becomes text in the browser and then uses the existing flow. `CivicReport.voiceUrl` remains declared but **unused** (intentional; no audio is persisted).
+
+### Remaining input ideas
+
+- Open311 `media_url` attachment, EXIF-based location, and server-side transcription (Whisper) are all still future work — none are wired today.
 
 ### Location history (known stub)
 
@@ -190,13 +200,14 @@ The scaffolding is **already stubbed** — the work is wiring it through, not de
 
 1. **Stale legacy `agent/` package (root).** `agent/index.ts` is the original POC: keyword-based `classify_report`, hard-coded `submit_to_311` with `api_key: 'yourapikey'` pointing at a dev endpoint, `check_location_history` returning fixed counts, and an `0.90` confidence threshold in its prompt. It is **fully superseded** by `ui/lib/agent.ts` and appears unused (own `node_modules`, separate `package.json`). Candidate for deletion to avoid confusion.
 2. **Polling is misleading.** `POST /api/run` runs the agent synchronously (can take many seconds; `maxDuration = 60`), so the client's 1s poll loop and the time-based `AgentProgressBar` (35s CSS animation, 7s message rotation) are cosmetic, not driven by real step events. `agent.ts` accepts an `onStep` callback that `finishAgentRun` never passes — real streaming/progress is unwired.
-3. **Hard-coded reporter identity.** `draft_submission` always uses `CivicPulse User / report@civicpulse.app`. No real user identity/contact capture (`CivicReport.userId` is unused).
-4. **No tests.** No unit/integration tests anywhere; only the manual `test:311` probe.
-5. **Secrets in `.env.local`.** Real Anthropic key, Upstash token, and SF tokens are present. Confirm gitignored before any commit/push.
-6. **Default app chrome.** `layout.tsx` still has `title: "Create Next App"`; `ui/README.md` is the unmodified create-next-app template.
-7. **Tailwind only on `/debug`.** The product screens (`page.tsx`) use inline styles; the debug page uses Tailwind utility classes. Two styling conventions.
-8. **`normalizeMentionForGeocode` deprecated** (kept for callers); `sf311SubmitAuthHeaders` deprecated alias of `sf311AuthHeaders`.
-9. **Single shared Redis store, no auth.** Any client can read any run by id; 1h TTL only.
+3. **Hard-coded reporter identity.** `draft_submission` always uses `CivicPulse User / report@civicpulse.app`. No real user identity/contact capture (`CivicReport.userId` and `voiceUrl` are unused).
+4. **Base64 photo persists in Redis.** `photoUrl` (a data URL, ≤ 4MB by client guard) is stored inside the `AgentRun` so edit-and-rerun can reuse it. This roughly doubles in transit and counts against Upstash request/size limits — fine for the POC, but object storage (URL-only `photoUrl`) is the V2 fix. The image is also sent to Claude twice per run (orchestrator + classifier), adding token cost/latency.
+5. **No tests.** No unit/integration tests anywhere; only the manual `test:311` probe.
+6. **Secrets in `.env.local`.** Real Anthropic key, Upstash token, and SF tokens are present. Confirm gitignored before any commit/push.
+7. **Default app chrome.** `layout.tsx` still has `title: "Create Next App"`; `ui/README.md` is the unmodified create-next-app template.
+8. **Tailwind only on `/debug`.** The product screens (`page.tsx`) use inline styles; the debug page uses Tailwind utility classes. Two styling conventions.
+9. **`normalizeMentionForGeocode` deprecated** (kept for callers); `sf311SubmitAuthHeaders` deprecated alias of `sf311AuthHeaders`.
+10. **Single shared Redis store, no auth.** Any client can read any run by id; 1h TTL only.
 
 ---
 
@@ -205,26 +216,28 @@ The scaffolding is **already stubbed** — the work is wiring it through, not de
 1. **SF Open311 write access is blocked.** SF discontinued third-party Open311 POST (July 12, 2025). `POST /requests.json` returns **403 "Invalid or missing api_key"** for every key/auth format; reads (GET) still return 200. Not fixable by rotating credentials. Sunset-notice contact: **carson.chin@sfgov.org** / 311 / **415-701-2311**. → Is there a replacement programmatic submit path, or should this stay mock-only?
 2. **Async vs sync agent run.** Should `POST /api/run` return immediately and run the agent in the background (true polling + streamed `onStep` progress), or keep the synchronous model? Current setup risks the 60s `maxDuration` ceiling on slow runs.
 3. **User identity.** Do reports need real reporter name/email/phone (and consent), or is the anonymous CivicPulse identity acceptable?
-4. **Storage for media.** Where do photos/audio live (Vercel Blob, S3) and what retention/privacy applies?
-5. **Voice transcription strategy.** Browser Web Speech API (cheap, client-only) vs server-side Whisper (robust, needs audio storage)?
-6. **Confidence threshold.** Currently `0.80` (lowered from `0.90` during the POC). Is `0.80` the intended production value?
-7. **Beyond SF.** Are the other 4 configured cities in scope, and who owns their Open311/SeeClickFix credentials?
+4. **Storage for media.** Photos are base64-in-Redis today. Where should they live (Vercel Blob, S3), with what retention/privacy, and should Open311 `media_url` be populated?
+5. **Voice UX.** Transcript currently **appends** to existing text (`lang='en-US'`). Should it replace instead? Offer language selection? For unsupported browsers (e.g. Firefox), is a disabled button acceptable or should it be hidden?
+6. **Photo-only / photo-vs-text trust.** Should a photo with no text be submittable? The classifier is told to trust the photo over conflicting text — is that the desired precedence?
+7. **Confidence threshold.** Currently `0.80` (lowered from `0.90` during the POC). Is `0.80` the intended production value?
+8. **Beyond SF.** Are the other 4 configured cities in scope, and who owns their Open311/SeeClickFix credentials?
 
 ---
 
 ## Recommended Order of Implementation
 
+- [x] **Photo input (Milestone 01 — done):** file picker + preview in `ReportScreen`; `photoUrl` (base64 data URL) threaded through `CivicReport` → `finishAgentRun` → `runCivicAgent`; multimodal `classify_report`.
+- [x] **Voice input (Milestone 02 — done):** 🎤 button drives the browser Web Speech API; transcript fills the existing `text` field; no backend.
+
+Remaining, roughly in priority order:
+
 1. **Repo hygiene (fast):** delete/quarantine the stale root `agent/` package; fix `layout.tsx` metadata; confirm `.env.local` is gitignored; replace the template `README`.
-2. **Photo input (highest value):**
-   - Real file picker + thumbnail in `ReportScreen` (`page.tsx`).
-   - Pass image (base64 data URL for POC, or `photoUrl` via a new `api/upload`) through `CivicReport` → `finishAgentRun` → `runCivicAgent`.
-   - Make the agent prompt multimodal (`agent.ts:195`) so `classify_report` sees the photo. **Single most impactful change.**
-3. **Voice input:** wire the 🎤 button to the browser Web Speech API to fill the `text` field (zero backend changes); defer server-side Whisper to V2.
-4. **Real progress / async run:** thread `onStep` from `finishAgentRun` into `runCivicAgent`, persist steps incrementally, and make the client poll meaningful (replaces the fake progress bar).
-5. **Real location history:** replace `getLocationHistory` with an Open311 read (reads work) or DataSF query.
-6. **Tests:** unit-test `reviewGate`, `extractPlaceFromDescription`/`geocodeQueryVariants`, and `resolveReportLocation`; integration-test the `/api/run` happy path with mock submit.
-7. **Live submit / multi-city (blocked / later):** flip `SF_OPEN311_LIVE` once SF provides a path; generalize `sf311*` into a per-city adapter for the other 4 cities.
+2. **Media to object storage:** move `photoUrl` off base64-in-Redis to Vercel Blob/S3 (URL-only); optionally populate Open311 `media_url` in `sf311Submit.ts`. Removes the Redis size risk + double token cost.
+3. **Real progress / async run:** thread `onStep` from `finishAgentRun` into `runCivicAgent`, persist steps incrementally, and make the client poll meaningful (replaces the fake progress bar).
+4. **Real location history:** replace `getLocationHistory` with an Open311 read (reads work) or DataSF query.
+5. **Tests:** unit-test `reviewGate`, `extractPlaceFromDescription`/`geocodeQueryVariants`, and `resolveReportLocation`; integration-test the `/api/run` happy path with mock submit.
+6. **Live submit / multi-city (blocked / later):** flip `SF_OPEN311_LIVE` once SF provides a path; generalize `sf311*` into a per-city adapter for the other 4 cities.
 
 ---
 
-PROJECT_CONTEXT.md refreshed. Ready for milestone review.
+PROJECT_CONTEXT.md refreshed. Reflects Photo (M01) + Voice (M02) input. Ready for milestone review.
