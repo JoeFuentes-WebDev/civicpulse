@@ -14,7 +14,7 @@ async function getDeviceLocation() {
 
 dotenv.config();
 
-const client = anthropic('claude-sonnet-4-20250514');
+const client = anthropic('-20250514');
 
 const resolve_location = tool({
   description: `Resolves a GPS coordinate into a human-readable address 

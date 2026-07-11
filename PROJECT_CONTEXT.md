@@ -66,7 +66,7 @@ agent/                                # STALE legacy package — superseded by u
 
 **Path alias:** `@shared/*` → `ui/shared/*` (tsconfig).
 
-**Tech stack:** Next.js `16.2.6`, React `19.2.4`, TypeScript (strict), Tailwind v4 (debug page only), `ai` v6, `@ai-sdk/anthropic` v3, `@upstash/redis`, `zod` v4, `react-markdown`. Model: `claude-sonnet-4-20250514`. Geocoding: OpenStreetMap Nominatim (no key).
+**Tech stack:** Next.js `16.2.6`, React `19.2.4`, TypeScript (strict), Tailwind v4 (debug page only), `ai` v6, `@ai-sdk/anthropic` v3, `@upstash/redis`, `zod` v4, `react-markdown`. Model: `claude-sonnet-5`. Geocoding: OpenStreetMap Nominatim (no key).
 
 ---
 
