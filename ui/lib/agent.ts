@@ -10,7 +10,8 @@ import {
 import { AgentStep } from '../shared/types';
 import { getLocationHistory } from './getLocationHistory';
 
-const client = anthropic('claude-sonnet-5');
+export const CLAUDE_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5';
+const client = anthropic(CLAUDE_MODEL);
 
 const resolve_location = tool({
   description: `Resolves a GPS coordinate into a human-readable address 

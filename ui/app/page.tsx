@@ -42,7 +42,7 @@ export default function Home() {
   }, []);
 
   async function handleSubmit() {
-    if (!text.trim() || !location) return;
+    if ((!text.trim() && !photo) || !location) return;
     setIsLoading(true);
     setRun(null);
     setServiceRequestId(null);
@@ -219,7 +219,7 @@ function getSpeechRecognitionCtor(): SpeechRecognitionCtor | undefined {
 
 function ReportScreen({ text, setText, photo, setPhoto, locationName, isLoading, submitError, onSubmit }: {
   text: string;
-  setText: (t: string) => void;
+  setText: React.Dispatch<React.SetStateAction<string>>;
   photo: string | null;
   setPhoto: (p: string | null) => void;
   locationName: string;
@@ -236,6 +236,9 @@ function ReportScreen({ text, setText, photo, setPhoto, locationName, isLoading,
   const [isRecording, setIsRecording] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [voiceSupported, setVoiceSupported] = useState(false);
+  const [isDescribing, setIsDescribing] = useState(false);
+
+  const submitDisabled = (!text.trim() && !photo) || isLoading || isDescribing;
 
   useEffect(() => {
     setVoiceSupported(Boolean(getSpeechRecognitionCtor()));
@@ -292,6 +295,26 @@ function ReportScreen({ text, setText, photo, setPhoto, locationName, isLoading,
     setIsRecording(false);
   }
 
+  async function describePhoto(dataUrl: string) {
+    setIsDescribing(true);
+    try {
+      const res = await fetch('/api/describe-photo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ photoUrl: dataUrl }),
+      });
+      if (!res.ok) return; // fail silently — photo-only submit still allowed
+      const data = await res.json();
+      const description = typeof data.description === 'string' ? data.description.trim() : '';
+      // Only pre-fill when the user hasn't typed anything (functional read = latest state).
+      if (description) setText(prev => (prev.trim() ? prev : description));
+    } catch {
+      // fail silently — leave text empty; the button gate allows photo-only submit
+    } finally {
+      setIsDescribing(false);
+    }
+  }
+
   function handlePhotoChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = ''; // allow re-selecting the same file
@@ -309,7 +332,9 @@ function ReportScreen({ text, setText, photo, setPhoto, locationName, isLoading,
     const reader = new FileReader();
     reader.onload = () => {
       setPhotoError(null);
-      setPhoto(typeof reader.result === 'string' ? reader.result : null);
+      const dataUrl = typeof reader.result === 'string' ? reader.result : null;
+      setPhoto(dataUrl);
+      if (dataUrl) void describePhoto(dataUrl);
     };
     reader.onerror = () => setPhotoError('Could not read that image.');
     reader.readAsDataURL(file);
@@ -353,6 +378,7 @@ function ReportScreen({ text, setText, photo, setPhoto, locationName, isLoading,
       <textarea
         value={text}
         onChange={e => setText(e.target.value)}
+        disabled={isDescribing}
         style={{
           width: '100%', height: '100px', resize: 'none',
           fontSize: '15px', padding: '16px',
@@ -361,7 +387,7 @@ function ReportScreen({ text, setText, photo, setPhoto, locationName, isLoading,
           fontFamily: 'inherit', boxSizing: 'border-box',
           lineHeight: 1.5, outline: 'none',
         }}
-        placeholder="e.g. Pothole on Valencia near 18th..."
+        placeholder={isDescribing ? 'Analyzing photo…' : 'Describe what you see…'}
       />
 
       {/* Hidden file input — opened by the Photo button */}
@@ -468,12 +494,12 @@ function ReportScreen({ text, setText, photo, setPhoto, locationName, isLoading,
       }}>
         <button
           onClick={onSubmit}
-          disabled={!text.trim() || isLoading}
+          disabled={submitDisabled}
           style={{
             width: '100%', padding: '18px', borderRadius: '14px', border: 'none',
-            background: !text.trim() || isLoading ? '#FFB8A0' : '#FF4500',
+            background: submitDisabled ? '#FFB8A0' : '#FF4500',
             color: '#fff', fontSize: '15px', fontWeight: 500,
-            cursor: !text.trim() || isLoading ? 'default' : 'pointer',
+            cursor: submitDisabled ? 'default' : 'pointer',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             gap: '8px', boxSizing: 'border-box', transition: 'background 0.2s',
           }}>
