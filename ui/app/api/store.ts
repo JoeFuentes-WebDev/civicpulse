@@ -5,7 +5,7 @@ const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
 });
-
+console.log('UPSTASH_URL:', process.env.UPSTASH_REDIS_REST_URL?.slice(0, 30));
 const TTL = 60 * 60; // 1 hour
 
 export async function getRun(id: string): Promise<AgentRun | null> {
